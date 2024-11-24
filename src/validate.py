@@ -90,6 +90,7 @@ def generate_fiq_val_predictions(clip_model: CLIP, relative_val_dataset: Fashion
         input_captions = [
             f"{flattened_captions[i].strip('.?, ').capitalize()} and {flattened_captions[i + 1].strip('.?, ')}" for
             i in range(0, len(flattened_captions), 2)]
+        # input_captions = captions
         text_inputs = clip.tokenize(input_captions, context_length=77).to(device, non_blocking=True)
 
         # Compute the predicted features
@@ -340,12 +341,13 @@ def main():
                                                                        preprocess)
         average_recall10_list.append(toptee_recallat10)
         average_recall50_list.append(toptee_recallat50)
-
-        print(f"\n{shirt_recallat10 = }")
-        print(f"{shirt_recallat50 = }")
-
+        print()
+        
         print(f"{dress_recallat10 = }")
         print(f"{dress_recallat50 = }")
+
+        print(f"{shirt_recallat10 = }")
+        print(f"{shirt_recallat50 = }")
 
         print(f"{toptee_recallat10 = }")
         print(f"{toptee_recallat50 = }")

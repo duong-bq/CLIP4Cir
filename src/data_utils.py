@@ -1,4 +1,5 @@
 import json
+import random
 from pathlib import Path
 from typing import List
 
@@ -95,6 +96,26 @@ def targetpad_transform(target_ratio: float, dim: int):
         Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
 
+def generate_randomized_fiq_caption(captions, type=-1):
+    random_num = random.random()
+    if type == 0:
+        random_num = 0.12
+    elif type == 1:
+        random_num = 0.37
+    elif type == 2:
+        random_num = 0.62
+    elif type == 3:
+        random_num = 0.88
+    if random_num < 0.25:
+        caption = f"{captions[0].strip('.?, ')} and {captions[1].strip('.?, ')}"
+    elif 0.25 < random_num < 0.5:
+        caption = f"{captions[1].strip('.?, ')} and {captions[0].strip('.?, ')}"
+    elif 0.5 < random_num < 0.75:
+        caption = f"{captions[0].strip('.?, ')}"
+    else:
+        caption = f"{captions[1].strip('.?, ')}"
+    return caption
+
 
 class FashionIQDataset(Dataset):
     """
@@ -108,7 +129,7 @@ class FashionIQDataset(Dataset):
     The dataset manage an arbitrary numbers of FashionIQ category, e.g. only dress, dress+toptee+shirt, dress+shirt...
     """
 
-    def __init__(self, split: str, dress_types: List[str], mode: str, preprocess: callable):
+    def __init__(self, split: str, dress_types: List[str], mode: str, preprocess: callable, plus: bool = False):
         """
         :param split: dataset split, should be in ['test', 'train', 'val']
         :param dress_types: list of fashionIQ category
@@ -119,6 +140,7 @@ class FashionIQDataset(Dataset):
                 - (reference_name, target_name, image_captions) when split == val
                 - (reference_name, reference_image, image_captions) when split == test
         :param preprocess: function which preprocesses the image
+        :param plus: use scaling positive and negative dataset or not
         """
         self.mode = mode
         self.dress_types = dress_types
@@ -139,6 +161,10 @@ class FashionIQDataset(Dataset):
         for dress_type in dress_types:
             with open(base_path / 'fashionIQ_dataset' / 'captions' / f'cap.{dress_type}.{split}.json') as f:
                 self.triplets.extend(json.load(f))
+        if plus:
+            with open(base_path / 'fashionIQ_dataset' / 'captions' / 'cap.extend_clip.train.json') as f:
+                self.triplets.extend(json.load(f))
+            print("Use scaling dataset!")
 
         # get the image names
         self.image_names: list = []
@@ -155,10 +181,10 @@ class FashionIQDataset(Dataset):
                 reference_name = self.triplets[index]['candidate']
 
                 if self.split == 'train':
-                    reference_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{reference_name}.jpg"
+                    reference_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{reference_name}.png"
                     reference_image = self.preprocess(PIL.Image.open(reference_image_path))
                     target_name = self.triplets[index]['target']
-                    target_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{target_name}.jpg"
+                    target_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{target_name}.png"
                     target_image = self.preprocess(PIL.Image.open(target_image_path))
                     return reference_image, target_image, image_captions
 
@@ -167,13 +193,13 @@ class FashionIQDataset(Dataset):
                     return reference_name, target_name, image_captions
 
                 elif self.split == 'test':
-                    reference_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{reference_name}.jpg"
+                    reference_image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{reference_name}.png"
                     reference_image = self.preprocess(PIL.Image.open(reference_image_path))
                     return reference_name, reference_image, image_captions
 
             elif self.mode == 'classic':
                 image_name = self.image_names[index]
-                image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{image_name}.jpg"
+                image_path = base_path / 'fashionIQ_dataset' / 'images' / f"{image_name}.png"
                 image = self.preprocess(PIL.Image.open(image_path))
                 return image_name, image
 

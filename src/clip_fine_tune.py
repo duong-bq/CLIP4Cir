@@ -1,4 +1,5 @@
 from comet_ml import Experiment
+import comet_ml
 import json
 import multiprocessing
 from argparse import ArgumentParser
@@ -42,7 +43,7 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
     :param kwargs: if you use the `targetpad` transform you should prove `target_ratio` as kwarg
     """
 
-    training_start = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+    training_start = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     training_path: Path = Path(
         base_path / f"models/clip_finetuned_on_fiq_{clip_model_name}_{training_start}")
     training_path.mkdir(exist_ok=False, parents=True)
@@ -107,7 +108,7 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
             index_names_list.append(index_features_and_names[1])
 
     # Define the train datasets and the combining function
-    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess)
+    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=False)
     relative_train_loader = DataLoader(dataset=relative_train_dataset, batch_size=batch_size,
                                        num_workers=multiprocessing.cpu_count(), pin_memory=False, collate_fn=collate_fn,
                                        drop_last=True, shuffle=True)
@@ -118,7 +119,8 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
         [{'params': filter(lambda p: p.requires_grad, clip_model.parameters()), 'lr': learning_rate,
           'betas': (0.9, 0.999), 'eps': 1e-7}])
     crossentropy_criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler()
+    # scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler("cuda")
 
     # When save_best == True initialize the best result to zero
     if save_best:
@@ -149,7 +151,8 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                 text_inputs = clip.tokenize(captions, context_length=77, truncate=True).to(device, non_blocking=True)
 
                 # Extract the features, compute the logits and the loss
-                with torch.cuda.amp.autocast():
+                # with torch.cuda.amp.autocast():
+                with torch.amp.autocast("cuda"):
                     reference_features = clip_model.encode_image(reference_images)
                     caption_features = clip_model.encode_text(text_inputs)
                     predicted_features = combining_function(reference_features, caption_features)
@@ -229,7 +232,7 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
 
 
 def clip_finetune_cirr(num_epochs: int, clip_model_name: str, learning_rate: float, batch_size: int,
-                       validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool,
+                       validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool, plus: bool,
                        **kwargs):
     """
     Fine-tune CLIP on the CIRR dataset using as combining function the image-text element-wise sum
@@ -354,13 +357,13 @@ def clip_finetune_cirr(num_epochs: int, clip_model_name: str, learning_rate: flo
                 scaler.step(optimizer)
                 scaler.update()
 
-                experiment.log_metric('step_loss', loss.detach().cpu().item(), step=step)
+                # experiment.log_metric('step_loss', loss.detach().cpu().item(), step=step)
                 update_train_running_results(train_running_results, loss, images_in_batch)
                 set_train_bar_description(train_bar, epoch, num_epochs, train_running_results)
 
             train_epoch_loss = float(
                 train_running_results['accumulated_train_loss'] / train_running_results['images_in_epoch'])
-            experiment.log_metric('epoch_loss', train_epoch_loss, epoch=epoch)
+            # experiment.log_metric('epoch_loss', train_epoch_loss, epoch=epoch)
 
             # Training CSV logging
             training_log_frame = pd.concat(
@@ -456,21 +459,25 @@ if __name__ == '__main__':
 
     if args.api_key and args.workspace:
         print("Comet logging ENABLED")
-        experiment = Experiment(
-            api_key=args.api_key,
-            project_name=f"{args.dataset} clip fine-tuning",
-            workspace=args.workspace,
-            disabled=False
+#         experiment = Experiment(
+#             api_key=args.api_key,
+#             project_name=f"{args.dataset} clip fine-tuning",
+#             workspace=args.workspace,
+#             disabled=False
+#         )
+        experiment = comet_ml.start(
+            api_key="n7QoQj806BKsBoVu85rB2FTdh",
+            workspace="duong-bq",
+            project="first"
         )
         if args.experiment_name:
             experiment.set_name(args.experiment_name)
     else:
         print("Comet loging DISABLED, in order to enable it you need to provide an api key and a workspace")
-        experiment = Experiment(
-            api_key="",
-            project_name="",
-            workspace="",
-            disabled=True
+        experiment = comet_ml.start(
+            api_key="n7QoQj806BKsBoVu85rB2FTdh",
+            workspace="duong-bq",
+            project="first"
         )
 
     experiment.log_code(folder=str(base_path / 'src'))
