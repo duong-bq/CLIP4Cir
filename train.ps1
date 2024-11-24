@@ -1,0 +1,13 @@
+python src/clip_fine_tune.py `
+   --dataset fashioniq `
+   --num-epochs 100 `
+   --clip-model-name "RN50x4" `
+   --encoder "both" `
+   --learning-rate 2e-6 `
+   --batch-size 4 `
+   --transform "targetpad" `
+   --target-ratio 1.25 `
+   --save-training `
+   --save-best `
+   --validation-frequency 1 `
+   --plus

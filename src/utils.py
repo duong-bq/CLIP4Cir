@@ -65,7 +65,10 @@ def generate_randomized_fiq_caption(flattened_captions: List[str]) -> List[str]:
     captions = []
     for i in range(0, len(flattened_captions), 2):
         random_num = random.random()
-        if random_num < 0.25:
+        if flattened_captions[i] == flattened_captions[i+1]:
+            # Data gen từ Gemini được duplicate thành 2 captions, chỉ lấy 1
+            captions.append(flattened_captions[i])
+        elif random_num < 0.25:
             captions.append(
                 f"{flattened_captions[i].strip('.?, ').capitalize()} and {flattened_captions[i + 1].strip('.?, ')}")
         elif 0.25 < random_num < 0.5:
