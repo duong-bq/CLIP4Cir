@@ -30,7 +30,9 @@ EXAMPLE:
 API_KEY = ["AIzaSyA3VTlvsjnkrSrcrB31YyG3t5XsZ1eNX7U",
            "AIzaSyAKxFpXa63Vbx46bOs4mIzESRp-NvFLKvY",
            "AIzaSyA15g0YPRtxvZgsx-VomaiLWibkyFOochs",
-           "AIzaSyB8jP8_xQykCzS2he-9hItTaga-xH95Kf4"]
+           "AIzaSyB8jP8_xQykCzS2he-9hItTaga-xH95Kf4",
+           "AIzaSyCRtrmAbehRz7_t-FAHMJSk0BpCyETUbWc",
+           "AIzaSyDzJf-fpq44sWrlAnKwaJGlyl47_0rMjgw",]
 
 gemini = genai.GenerativeModel(
                 'gemini-1.5-flash',
@@ -44,17 +46,19 @@ if __name__ == "__main__":
     START_TIME = time.time()
     with open("fashionIQ_dataset\captions\cap.extend_clip.train.json") as f:
         dress_triplets = json.load(f)
-    f_out = open("fashionIQ_dataset\captions\cap.gemini.train2.txt", "w")
+    f_out = open("fashionIQ_dataset\captions\cap.gemini.train3.txt", "w", encoding='utf-8')
     key_number = 0 # bắt đầu với 'duongbuiq'
-    start_time_api_key = {0:0, 1:0, 2:0, 3:0}
-    for i, item in enumerate(tqdm(dress_triplets[3122:])):
+    start_time_api_key = {}
+    for i in range(len(API_KEY)):
+        start_time_api_key[i] = 0
+    for i, item in enumerate(tqdm(dress_triplets[3731:])):
         try:
             candidate = Image.open(f"fashionIQ_dataset\images\{item['candidate']}.png")
             target = Image.open(f"fashionIQ_dataset\images\{item['target']}.png")
             response = gemini.generate_content(contents=[candidate, target, PROMPT],
                                                request_options=RequestOptions(retry=retry.Retry(initial=10, multiplier=2, maximum=60, timeout=300)))
             write_content = {
-                "id": i + 3122,
+                "id": i + 3731,
                 "candiate": item['candidate'],
                 "target": item['target'],
                 "caption": [json.loads(response.text)['caption']]
@@ -62,11 +66,11 @@ if __name__ == "__main__":
             f_out.write(json.dumps(write_content, indent=4, ensure_ascii=False) + '\n')
             # Sau 15 requests thì đổi API_KEY
             if (i+1) % 15 == 0:
-                key_number = (key_number + 1) % 4
+                key_number = (key_number + 1) % len(API_KEY)
                 end_time_api_key = time.time()
                 time.sleep(max(0, 60 - (end_time_api_key - start_time_api_key[key_number])))
                 start_time_api_key[key_number] = end_time_api_key
-                genai.configure(api_key=API_KEY[key_number%4])
+                genai.configure(api_key=API_KEY[key_number % len(API_KEY)])
                 gemini = genai.GenerativeModel(
                     'gemini-1.5-flash',
                     generation_config=genai.GenerationConfig(
@@ -75,11 +79,13 @@ if __name__ == "__main__":
                         max_output_tokens=77
                     ))
         except ResourceExhausted:
-            key_number = (key_number + 1) % 4
+            print(API_KEY[key_number], "exhausted")
+            key_number = (key_number + 1) % len(API_KEY)
             end_time_api_key = time.time()
-            time.sleep(max(0, 60 - (end_time_api_key - start_time_api_key[key_number])))
+            if start_time_api_key[key_number] != 0:
+                time.sleep(max(0, 60 - (end_time_api_key - start_time_api_key[key_number])))
             start_time_api_key[key_number] = end_time_api_key
-            genai.configure(api_key=API_KEY[key_number%4])
+            genai.configure(api_key=API_KEY[key_number % len(API_KEY)])
             gemini = genai.GenerativeModel(
                 'gemini-1.5-flash',
                 generation_config=genai.GenerationConfig(
