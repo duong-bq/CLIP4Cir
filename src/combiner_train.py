@@ -1,4 +1,5 @@
 from comet_ml import Experiment
+import comet_ml
 import json
 import multiprocessing
 from argparse import ArgumentParser
@@ -24,7 +25,7 @@ from validate import compute_cirr_val_metrics, compute_fiq_val_metrics
 def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[str],
                           projection_dim: int, hidden_dim: int, num_epochs: int, clip_model_name: str,
                           combiner_lr: float, batch_size: int, clip_bs: int, validation_frequency: int,
-                          transform: str, save_training: bool, save_best: bool, **kwargs):
+                          transform: str, save_training: bool, save_best: bool, plus: bool, **kwargs):
     """
     Train the Combiner on FashionIQ dataset keeping frozed the CLIP model
     :param train_dress_types: FashionIQ categories to train on
@@ -99,7 +100,7 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
 
     # Define the combiner and the train dataset
     combiner = Combiner(feature_dim, projection_dim, hidden_dim).to(device, non_blocking=True)
-    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess)
+    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=plus)
     relative_train_loader = DataLoader(dataset=relative_train_dataset, batch_size=batch_size,
                                        num_workers=multiprocessing.cpu_count(), pin_memory=True, collate_fn=collate_fn,
                                        drop_last=True, shuffle=True)
@@ -155,7 +156,8 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
                         [clip_model.encode_text(mini_batch).float() for mini_batch in text_inputs_list])
 
                 # Compute the logits and the loss
-                with torch.cuda.amp.autocast():
+                # with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     logits = combiner(reference_image_features, text_features, target_image_features)
                     ground_truth = torch.arange(images_in_batch, dtype=torch.long, device=device)
                     loss = crossentropy_criterion(logits, ground_truth)
@@ -442,6 +444,8 @@ if __name__ == '__main__':
                         help="Whether save the training model")
     parser.add_argument("--save-best", dest="save_best", action='store_true',
                         help="Save only the best model during training")
+    parser.add_argument("--gpu", default=0, type=int, help="GPU to use")
+    parser.add_argument("--plus", dest="plus", action='store_true')
 
     args = parser.parse_args()
     if args.dataset.lower() not in ['fashioniq', 'cirr']:
@@ -461,29 +465,34 @@ if __name__ == '__main__':
         "target_ratio": args.target_ratio,
         "save_training": args.save_training,
         "save_best": args.save_best,
+        "gpu": args.gpu,
+        "plus": args.plus
     }
 
     if args.api_key and args.workspace:
         print("Comet logging ENABLED")
-        experiment = Experiment(
-            api_key=args.api_key,
-            project_name=f"{args.dataset} combiner training",
-            workspace=args.workspace,
-            disabled=False
+        experiment = comet_ml.start(
+            api_key="n7QoQj806BKsBoVu85rB2FTdh",
+            workspace="duong-bq",
+            project="first"
         )
         if args.experiment_name:
             experiment.set_name(args.experiment_name)
     else:
         print("Comet loging DISABLED, in order to enable it you need to provide an api key and a workspace")
-        experiment = Experiment(
-            api_key="",
-            project_name="",
-            workspace="",
-            disabled=True
+        experiment = comet_ml.start(
+            api_key="n7QoQj806BKsBoVu85rB2FTdh",
+            workspace="duong-bq",
+            project="first"
         )
 
     experiment.log_code(folder=str(base_path / 'src'))
     experiment.log_parameters(training_hyper_params)
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda:{}".format(args.gpu))
+    else:
+        device = torch.device("cpu")
 
     if args.dataset.lower() == 'cirr':
         combiner_training_cirr(**training_hyper_params)

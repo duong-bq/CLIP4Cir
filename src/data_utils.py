@@ -162,7 +162,13 @@ class FashionIQDataset(Dataset):
             with open(base_path / 'fashionIQ_dataset' / 'captions' / f'cap.{dress_type}.{split}.json') as f:
                 self.triplets.extend(json.load(f))
         if plus:
-            with open(base_path / 'fashionIQ_dataset' / 'captions' / 'cap.extend_clip.train.json') as f:
+            # with open(base_path / 'fashionIQ_dataset' / 'captions' / 'cap.extend_clip.train.json') as f:
+            #     extended_triplets = json.load(f)
+            #     for i, item in enumerate(extended_triplets):
+            #         item['captions'] = [item['captions'][0], item['captions'][0]]
+            #         extended_triplets[i] = item
+            #     self.triplets.extend(extended_triplets)
+            with open(base_path / 'fashionIQ_dataset/captions/cap.gemini.train2.json') as f:
                 self.triplets.extend(json.load(f))
             print("Use scaling dataset!")
 

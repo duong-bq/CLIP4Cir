@@ -24,7 +24,7 @@ from validate import compute_cirr_val_metrics, compute_fiq_val_metrics
 
 def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                       num_epochs: int, clip_model_name: str, learning_rate: float, batch_size: int,
-                      validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool,
+                      validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool, plus: bool,
                       **kwargs):
     """
     Fine-tune CLIP on the FashionIQ dataset using as combining function the image-text element-wise sum
@@ -108,7 +108,7 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
             index_names_list.append(index_features_and_names[1])
 
     # Define the train datasets and the combining function
-    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=False)
+    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=plus)
     relative_train_loader = DataLoader(dataset=relative_train_dataset, batch_size=batch_size,
                                        num_workers=multiprocessing.cpu_count(), pin_memory=False, collate_fn=collate_fn,
                                        drop_last=True, shuffle=True)
@@ -224,8 +224,8 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                 validation_log_frame.to_csv(str(training_path / 'validation_metrics.csv'), index=False)
 
             if save_training:
-                if save_best and results_dict['average_recall'] > best_avg_recall:
-                    best_avg_recall = results_dict['average_recall']
+                if save_best and results_dict['average_recall_at10'] > best_avg_recall:
+                    best_avg_recall = results_dict['average_recall_at10']
                     save_model('tuned_clip_best', epoch, clip_model, training_path)
                 elif not save_best:
                     save_model(f'tuned_clip_{epoch}', epoch, clip_model, training_path)
@@ -439,6 +439,8 @@ if __name__ == '__main__':
                         help="Whether save the training model")
     parser.add_argument("--save-best", dest="save_best", action='store_true',
                         help="Save only the best model during training")
+    parser.add_argument("--gpu", default=0, type=int, help="GPU to use")
+    parser.add_argument("--plus", dest="plus", action='store_true')
 
     args = parser.parse_args()
     if args.dataset.lower() not in ['fashioniq', 'cirr']:
@@ -454,7 +456,9 @@ if __name__ == '__main__':
         "target_ratio": args.target_ratio,
         "save_training": args.save_training,
         "encoder": args.encoder,
-        "save_best": args.save_best
+        "save_best": args.save_best,
+        "gpu": args.gpu,
+        "plus": args.plus
     }
 
     if args.api_key and args.workspace:
@@ -482,6 +486,11 @@ if __name__ == '__main__':
 
     experiment.log_code(folder=str(base_path / 'src'))
     experiment.log_parameters(training_hyper_params)
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda:{}".format(args.gpu))
+    else:
+        device = torch.device("cpu")
 
     if args.dataset.lower() == 'cirr':
         clip_finetune_cirr(**training_hyper_params)
