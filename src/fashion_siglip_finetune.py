@@ -14,19 +14,20 @@ import torch
 import torch.nn.functional as F
 from torch import optim, nn
 from torch.utils.data import DataLoader
-from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
-import os
+from transformers import CLIPProcessor, CLIPModel
+from transformers import AutoModel, AutoProcessor
+import torch.utils.checkpoint as checkpoint
 
 from data_utils import base_path, squarepad_transform, targetpad_transform, CIRRDataset, FashionIQDataset
 from utils import collate_fn, update_train_running_results, set_train_bar_description, extract_index_features, \
-    save_model, generate_randomized_fiq_caption, element_wise_sum, device
-from validate import compute_cirr_val_metrics, compute_fiq_val_metrics
+    extract_index_features_fclip, save_model, generate_randomized_fiq_caption, element_wise_sum, device
+from validate_fclip import compute_fiq_val_metrics
 
 
 def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                       num_epochs: int, clip_model_name: str, learning_rate: float, batch_size: int,
-                      validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool, plus: bool = False,
+                      validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool,
                       **kwargs):
     """
     Fine-tune CLIP on the FashionIQ dataset using as combining function the image-text element-wise sum
@@ -54,7 +55,13 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
     with open(training_path / "training_hyperparameters.json", 'w+') as file:
         json.dump(training_hyper_params, file, sort_keys=True, indent=4)
 
-    clip_model, clip_preprocess = clip.load(clip_model_name, device=device, jit=False)
+    # clip_model, clip_preprocess = clip.load(clip_model_name, device=device, jit=False)
+    # clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+    # clip_preprocess = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    # clip_model = CLIPModel.from_pretrained("patrickjohncyh/fashion-clip")
+    # clip_preprocess = CLIPProcessor.from_pretrained("patrickjohncyh/fashion-clip")
+    clip_model = AutoModel.from_pretrained('Marqo/marqo-fashionSigLIP', trust_remote_code=True)
+    clip_preprocess = AutoProcessor.from_pretrained('Marqo/marqo-fashionSigLIP', trust_remote_code=True)
 
     if encoder == 'text':
         print('Only the CLIP text encoder will be fine-tuned')
@@ -71,11 +78,14 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
     else:
         raise ValueError("encoder parameter should be in ['text', 'image', both']")
 
+    clip_model.to(device)
     clip_model.eval().float()
-    input_dim = clip_model.visual.input_resolution
+    input_dim = 224
 
     if transform == "clip":
-        preprocess = clip_preprocess
+        def _clip_preprocess(image):
+            return clip_preprocess(images=image, return_tensors="pt")['pixel_values'].squeeze(0)
+        preprocess = _clip_preprocess
         print('CLIP default preprocess pipeline is used')
     elif transform == "squarepad":
         preprocess = squarepad_transform(input_dim)
@@ -100,17 +110,17 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
     # Define the validation datasets
     for idx, dress_type in enumerate(val_dress_types):
         idx_to_dress_mapping[idx] = dress_type
-        relative_val_dataset = FashionIQDataset('val', [dress_type], 'relative', preprocess, plus=plus)
+        relative_val_dataset = FashionIQDataset('val', [dress_type], 'relative', preprocess, )
         relative_val_datasets.append(relative_val_dataset)
-        classic_val_dataset = FashionIQDataset('val', [dress_type], 'classic', preprocess, plus=plus)
+        classic_val_dataset = FashionIQDataset('val', [dress_type], 'classic', preprocess, )
         classic_val_datasets.append(classic_val_dataset)
         if encoder == 'text':
-            index_features_and_names = extract_index_features(classic_val_dataset, clip_model)
+            index_features_and_names = extract_index_features_fclip(classic_val_dataset, clip_model)
             index_features_list.append(index_features_and_names[0])
             index_names_list.append(index_features_and_names[1])
 
     # Define the train datasets and the combining function
-    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=plus)
+    relative_train_dataset = FashionIQDataset('train', train_dress_types, 'relative', preprocess, plus=False)
     relative_train_loader = DataLoader(dataset=relative_train_dataset, batch_size=batch_size,
                                        num_workers=multiprocessing.cpu_count(), pin_memory=False, collate_fn=collate_fn,
                                        drop_last=True, shuffle=True)
@@ -147,18 +157,14 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                 reference_images = reference_images.to(device, non_blocking=True)
                 target_images = target_images.to(device, non_blocking=True)
 
-                # Randomize the training caption in four way: (a) cap1 and cap2 (b) cap2 and cap1 (c) cap1 (d) cap2
-                # flattened_captions: list = np.array(captions).T.flatten().tolist()
-                # captions = generate_randomized_fiq_caption(flattened_captions)
-                text_inputs = clip.tokenize(captions, context_length=77, truncate=True).to(device, non_blocking=True)
-
                 # Extract the features, compute the logits and the loss
                 # with torch.cuda.amp.autocast():
                 with torch.amp.autocast("cuda"):
-                    reference_features = checkpoint(clip_model.encode_image, reference_images, use_reentrant=False)
-                    caption_features = checkpoint(clip_model.encode_text, text_inputs, use_reentrant=False)
+                    reference_features = clip_model.get_image_features(reference_images)
+                    caption_features = clip_preprocess(text=captions, return_tensors="pt", padding=True).to(device)
+                    caption_features = clip_model.get_text_features(**caption_features)
                     predicted_features = combining_function(reference_features, caption_features)
-                    target_features = F.normalize(clip_model.encode_image(target_images))
+                    target_features = F.normalize(clip_model.get_image_features(target_images))
 
                     logits = 100 * predicted_features @ target_features.T
 
@@ -198,8 +204,9 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                     if encoder == 'text':
                         index_features, index_names = index_features_list[idx], index_names_list[idx]
                     else:
-                        index_features, index_names = extract_index_features(classic_val_dataset, clip_model)
+                        index_features, index_names = extract_index_features_fclip(classic_val_dataset, clip_model)
                     recall_at5, recall_at10, recall_at20, recall_at50 = compute_fiq_val_metrics(relative_val_dataset, clip_model,
+                                                                        clip_preprocess,
                                                                        index_features, index_names,
                                                                        combining_function)
                     recalls_at5.append(recall_at5)
@@ -220,7 +227,7 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
                     f'average_recall_at50': round(mean(recalls_at50), 2),
                     f'average_recall': (mean(recalls_at50) + mean(recalls_at10)) / 2
                 })
-
+            
                 print(json.dumps(results_dict, indent=4))
                 experiment.log_metrics(
                     results_dict,
@@ -236,197 +243,11 @@ def clip_finetune_fiq(train_dress_types: List[str], val_dress_types: List[str],
             if save_training:
                 if save_best and results_dict['average_recall_at10'] > best_avg_recall:
                     best_avg_recall = results_dict['average_recall_at10']
-                    save_model('tuned_clip_best', epoch, clip_model, training_path)
+                    # save_model('tuned_clip_best', epoch, clip_model, training_path)
+                    clip_model.save_pretrained(training_path)
                 elif not save_best:
-                    save_model(f'tuned_clip_{epoch}', epoch, clip_model, training_path)
-
-
-def clip_finetune_cirr(num_epochs: int, clip_model_name: str, learning_rate: float, batch_size: int,
-                       validation_frequency: int, transform: str, save_training: bool, encoder: str, save_best: bool, plus: bool,
-                       **kwargs):
-    """
-    Fine-tune CLIP on the CIRR dataset using as combining function the image-text element-wise sum
-    :param num_epochs: number of epochs
-    :param clip_model_name: CLIP model you want to use: "RN50", "RN101", "RN50x4"...
-    :param learning_rate: fine-tuning learning rate
-    :param batch_size: batch size
-    :param validation_frequency: validation frequency expressed in epoch
-    :param transform: preprocess transform you want to use. Should be in ['clip', 'squarepad', 'targetpad']. When
-                targetpad is also required to provide `target_ratio` kwarg.
-    :param save_training: when True save the weights of the Combiner network
-    :param encoder: which CLIP encoder to fine-tune, should be in ['both', 'text', 'image']
-    :param save_best: when True save only the weights of the best Combiner wrt three different averages of the metrics
-    :param kwargs: if you use the `targetpad` transform you should prove `target_ratio`    :return:
-    """
-
-    training_start = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    training_path: Path = Path(
-        base_path / f"models/clip_finetuned_on_cirr_{clip_model_name}_{training_start}")
-    training_path.mkdir(exist_ok=False, parents=True)
-
-    # Save all the hyperparameters on a file
-    with open(training_path / "training_hyperparameters.json", 'w+') as file:
-        json.dump(training_hyper_params, file, sort_keys=True, indent=4)
-
-    clip_model, clip_preprocess = clip.load(clip_model_name, device=device, jit=False)
-
-    if encoder == 'text':
-        print('Only the CLIP text encoder will be fine-tuned')
-        for param in clip_model.visual.parameters():
-            param.requires_grad = False
-    elif encoder == 'image':
-        print('Only the CLIP image encoder will be fine-tuned')
-        for param in clip_model.parameters():
-            param.requires_grad = False
-        for param in clip_model.visual.parameters():
-            param.requires_grad = True
-    elif encoder == 'both':
-        print('Both CLIP encoders will be fine-tuned')
-    else:
-        raise ValueError("encoder parameter should be in ['text', 'image', both']")
-
-    clip_model.eval().float()
-    input_dim = clip_model.visual.input_resolution
-
-    if transform == "clip":
-        preprocess = clip_preprocess
-        print('CLIP default preprocess pipeline is used')
-    elif transform == "squarepad":
-        preprocess = squarepad_transform(input_dim)
-        print('Square pad preprocess pipeline is used')
-    elif transform == "targetpad":
-        target_ratio = kwargs['target_ratio']
-        preprocess = targetpad_transform(target_ratio, input_dim)
-        print(f'Target pad with {target_ratio = } preprocess pipeline is used')
-    else:
-        raise ValueError("Preprocess transform should be in ['clip', 'squarepad', 'targetpad']")
-
-    # Define the validation datasets
-    relative_val_dataset = CIRRDataset('val', 'relative', preprocess)
-    classic_val_dataset = CIRRDataset('val', 'classic', preprocess)
-
-    # When fine-tuning only the text encoder we can precompute the index features since they do not change over
-    # the epochs
-    if encoder == 'text':
-        val_index_features, val_index_names = extract_index_features(classic_val_dataset, clip_model)
-
-    # Define the train dataset and the combining function
-    relative_train_dataset = CIRRDataset('train', 'relative', preprocess)
-    relative_train_loader = DataLoader(dataset=relative_train_dataset, batch_size=batch_size,
-                                       num_workers=multiprocessing.cpu_count(), pin_memory=False, collate_fn=collate_fn,
-                                       drop_last=True, shuffle=True)
-    combining_function = element_wise_sum
-
-    # Define the optimizer, the loss and the grad scaler
-    optimizer = optim.AdamW(
-        [{'params': filter(lambda p: p.requires_grad, clip_model.parameters()), 'lr': learning_rate,
-          'betas': (0.9, 0.999), 'eps': 1e-7}])
-    crossentropy_criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler()
-
-    # When save_best == True initialize the best results to zero
-    if save_best:
-        best_harmonic = 0
-        best_geometric = 0
-        best_arithmetic = 0
-
-    # Define dataframes for CSV logging
-    training_log_frame = pd.DataFrame()
-    validation_log_frame = pd.DataFrame()
-
-    for epoch in range(num_epochs):
-        with experiment.train():
-            train_running_results = {'images_in_epoch': 0, 'accumulated_train_loss': 0}
-            train_bar = tqdm(relative_train_loader, ncols=150)
-            for idx, (reference_images, target_images, captions) in enumerate(train_bar):
-                images_in_batch = reference_images.size(0)
-                step = len(train_bar) * epoch + idx
-
-                optimizer.zero_grad()
-
-                reference_images = reference_images.to(device, non_blocking=True)
-                target_images = target_images.to(device, non_blocking=True)
-
-                # Extract the features, compute the logits and the loss
-                with torch.cuda.amp.autocast():
-                    reference_features = clip_model.encode_image(reference_images)
-                    text_inputs = clip.tokenize(captions, context_length=77, truncate=True).to(device,
-                                                                                               non_blocking=True)
-                    text_features = clip_model.encode_text(text_inputs)
-
-                    target_features = F.normalize(clip_model.encode_image(target_images), dim=-1)
-                    predicted_features = combining_function(reference_features, text_features)
-
-                    logits = 100 * predicted_features @ target_features.T
-
-                    ground_truth = torch.arange(images_in_batch, dtype=torch.long, device=device)
-                    loss = crossentropy_criterion(logits, ground_truth)
-
-                # Backpropagate and update the weights
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-
-                # experiment.log_metric('step_loss', loss.detach().cpu().item(), step=step)
-                update_train_running_results(train_running_results, loss, images_in_batch)
-                set_train_bar_description(train_bar, epoch, num_epochs, train_running_results)
-
-            train_epoch_loss = float(
-                train_running_results['accumulated_train_loss'] / train_running_results['images_in_epoch'])
-            # experiment.log_metric('epoch_loss', train_epoch_loss, epoch=epoch)
-
-            # Training CSV logging
-            training_log_frame = pd.concat(
-                [training_log_frame,
-                 pd.DataFrame(data={'epoch': epoch, 'train_epoch_loss': train_epoch_loss}, index=[0])])
-            training_log_frame.to_csv(str(training_path / 'train_metrics.csv'), index=False)
-
-        if epoch % validation_frequency == 0:
-            with experiment.validate():
-                if encoder != 'text':
-                    val_index_features, val_index_names = extract_index_features(classic_val_dataset, clip_model)
-                results = compute_cirr_val_metrics(relative_val_dataset, clip_model, val_index_features,
-                                                   val_index_names, combining_function)
-                group_recall_at1, group_recall_at2, group_recall_at3, recall_at1, recall_at5, recall_at10, recall_at50 = results
-
-                results_dict = {
-                    'group_recall_at1': group_recall_at1,
-                    'group_recall_at2': group_recall_at2,
-                    'group_recall_at3': group_recall_at3,
-                    'recall_at1': recall_at1,
-                    'recall_at5': recall_at5,
-                    'recall_at10': recall_at10,
-                    'recall_at50': recall_at50,
-                    'mean(R@5+R_s@1)': (group_recall_at1 + recall_at5) / 2,
-                    'arithmetic_mean': mean(results),
-                    'harmonic_mean': harmonic_mean(results),
-                    'geometric_mean': geometric_mean(results)
-                }
-                print(json.dumps(results_dict, indent=4))
-
-                experiment.log_metrics(
-                    results_dict,
-                    epoch=epoch
-                )
-
-                # Validation CSV logging
-                log_dict = {'epoch': epoch}
-                log_dict.update(results_dict)
-                validation_log_frame = pd.concat([validation_log_frame, pd.DataFrame(data=log_dict, index=[0])])
-                validation_log_frame.to_csv(str(training_path / 'validation_metrics.csv'), index=False)
-
-                if save_training:
-                    if save_best and results_dict['arithmetic_mean'] > best_arithmetic:
-                        best_arithmetic = results_dict['arithmetic_mean']
-                        save_model('tuned_clip_arithmetic', epoch, clip_model, training_path)
-                    if save_best and results_dict['harmonic_mean'] > best_harmonic:
-                        best_harmonic = results_dict['harmonic_mean']
-                        save_model('tuned_clip_harmonic', epoch, clip_model, training_path)
-                    if save_best and results_dict['geometric_mean'] > best_geometric:
-                        best_geometric = results_dict['geometric_mean']
-                        save_model('tuned_clip_geometric', epoch, clip_model, training_path)
-                    if not save_best:
-                        save_model(f'tuned_clip_{epoch}', epoch, clip_model, training_path)
+                    # save_model(f'tuned_clip_{epoch}', epoch, clip_model, training_path)
+                    clip_model.save_pretrained(training_path)
 
 
 if __name__ == '__main__':
@@ -449,7 +270,6 @@ if __name__ == '__main__':
                         help="Whether save the training model")
     parser.add_argument("--save-best", dest="save_best", action='store_true',
                         help="Save only the best model during training")
-    parser.add_argument("--use_gemini", dest="use_gemini", action='store_true')
     parser.add_argument("--plus", dest="plus", action='store_true')
 
     args = parser.parse_args()
@@ -467,20 +287,11 @@ if __name__ == '__main__':
         "save_training": args.save_training,
         "encoder": args.encoder,
         "save_best": args.save_best,
-        "use_gemini": args.use_gemini,
         "plus": args.plus
     }
 
-    print(training_hyper_params)
-
     if args.api_key and args.workspace:
         print("Comet logging ENABLED")
-#         experiment = Experiment(
-#             api_key=args.api_key,
-#             project_name=f"{args.dataset} clip fine-tuning",
-#             workspace=args.workspace,
-#             disabled=False
-#         )
         experiment = comet_ml.start(
             api_key="n7QoQj806BKsBoVu85rB2FTdh",
             workspace="duong-bq",
@@ -499,18 +310,6 @@ if __name__ == '__main__':
     experiment.log_code(folder=str(base_path / 'src'))
     experiment.log_parameters(training_hyper_params)
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    if args.dataset.lower() == 'cirr':
-        clip_finetune_cirr(**training_hyper_params)
-    elif args.dataset.lower() == 'fashioniq':
-        if args.use_gemini:
-            training_hyper_params.update(
-                {'train_dress_types': ['dress', 'toptee', 'shirt', 'gemini'], 'val_dress_types': ['dress', 'toptee', 'shirt', 'gemini']})
-        else:
-            training_hyper_params.update(
-                {'train_dress_types': ['dress', 'toptee', 'shirt'], 'val_dress_types': ['dress', 'toptee', 'shirt']})
-        clip_finetune_fiq(**training_hyper_params)
+    training_hyper_params.update(
+        {'train_dress_types': ['dress', 'toptee', 'shirt'], 'val_dress_types': ['dress', 'toptee', 'shirt']})
+    clip_finetune_fiq(**training_hyper_params)

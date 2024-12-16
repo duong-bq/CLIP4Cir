@@ -266,3 +266,7 @@ cython_debug/
 checkpoints/
 models/
 .cometml-runs
+.vscode/
+*.ipynb
+*.csv
+temp/

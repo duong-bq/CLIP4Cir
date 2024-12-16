@@ -1,0 +1,4 @@
+git+https://github.com/openai/CLIP.git
+torch
+comet-ml
+google-generativeai==0.8.3

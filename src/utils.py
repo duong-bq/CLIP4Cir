@@ -6,6 +6,7 @@ from typing import Union, Tuple, List
 import torch
 import torch.nn.functional as F
 from clip.model import CLIP
+from transformers import CLIPProcessor, CLIPModel
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -13,12 +14,12 @@ from tqdm import tqdm
 from data_utils import CIRRDataset, FashionIQDataset
 
 if torch.cuda.is_available():
-    device = torch.device("cuda:1")
+    device = torch.device("cuda")
 else:
     device = torch.device("cpu")
 
 
-def extract_index_features(dataset: Union[CIRRDataset, FashionIQDataset], clip_model: CLIP) -> \
+def extract_index_features(dataset: Union[CIRRDataset, FashionIQDataset], clip_model: CLIP, device="cuda") -> \
         Tuple[torch.tensor, List[str]]:
     """
     Extract FashionIQ or CIRR index features
@@ -39,6 +40,27 @@ def extract_index_features(dataset: Union[CIRRDataset, FashionIQDataset], clip_m
         images = images.to(device, non_blocking=True)
         with torch.no_grad():
             batch_features = clip_model.encode_image(images)
+            index_features = torch.vstack((index_features, batch_features))
+            index_names.extend(names)
+    return index_features, index_names
+
+
+def extract_index_features_fclip(dataset: Union[CIRRDataset, FashionIQDataset], clip_model: CLIPModel, device="cuda") -> \
+        Tuple[torch.tensor, List[str]]:
+    feature_dim = clip_model.projection_dim
+    classic_val_loader = DataLoader(dataset=dataset, batch_size=32, num_workers=multiprocessing.cpu_count(),
+                                    pin_memory=True, collate_fn=collate_fn)
+    index_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+    index_names = []
+    if isinstance(dataset, CIRRDataset):
+        print(f"extracting CIRR {dataset.split} index features")
+    elif isinstance(dataset, FashionIQDataset):
+        print(f"extracting fashionIQ {dataset.dress_types} - {dataset.split} index features")
+    for names, images in tqdm(classic_val_loader):
+        images = images.to(device, non_blocking=True)
+        with torch.no_grad():
+            # batch_features = clip_model.encode_image(images)
+            batch_features = clip_model.get_image_features(images)
             index_features = torch.vstack((index_features, batch_features))
             index_names.extend(names)
     return index_features, index_names

@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data_utils import base_path, squarepad_transform, FashionIQDataset, targetpad_transform, CIRRDataset
-from combiner import Combiner
+# from combiner import Combiner
+from combiner_attn import Combiner
 from utils import collate_fn, update_train_running_results, set_train_bar_description, save_model, \
     extract_index_features, generate_randomized_fiq_caption, device
 from validate import compute_cirr_val_metrics, compute_fiq_val_metrics
@@ -138,9 +139,9 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
                 target_images = target_images.to(device, non_blocking=True)
 
                 # Randomize the training caption in four way: (a) cap1 and cap2 (b) cap2 and cap1 (c) cap1 (d) cap2
-                flattened_captions: list = np.array(captions).T.flatten().tolist()
-                input_captions = generate_randomized_fiq_caption(flattened_captions)
-                text_inputs = clip.tokenize(input_captions, truncate=True).to(device, non_blocking=True)
+                # flattened_captions: list = np.array(captions).T.flatten().tolist()
+                # input_captions = generate_randomized_fiq_caption(flattened_captions)
+                text_inputs = clip.tokenize(captions, truncate=True).to(device, non_blocking=True)
 
                 # Extract the features with CLIP
                 with torch.no_grad():
@@ -185,7 +186,9 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
             clip_model = clip_model.float()  # In validation we use fp32 CLIP model
             with experiment.validate():
                 combiner.eval()
+                recalls_at5 = []
                 recalls_at10 = []
+                recalls_at20 = []
                 recalls_at50 = []
 
                 # Compute and log validation metrics for each validation dataset (which corresponds to a different
@@ -194,17 +197,24 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
                                                                                   index_features_list,
                                                                                   index_names_list,
                                                                                   idx_to_dress_mapping):
-                    recall_at10, recall_at50 = compute_fiq_val_metrics(relative_val_dataset, clip_model, index_features,
-                                                                       index_names, combiner.combine_features)
+                    recall_at5, recall_at10, recall_at20, recall_at50 = compute_fiq_val_metrics(relative_val_dataset, clip_model,
+                                                                       index_features, index_names,
+                                                                       combiner.combine_features)
+                    recalls_at5.append(recall_at5)
                     recalls_at10.append(recall_at10)
+                    recalls_at20.append(recall_at20)
                     recalls_at50.append(recall_at50)
 
                 results_dict = {}
                 for i in range(len(recalls_at10)):
+                    results_dict[f'{idx_to_dress_mapping[i]}_recall_at5'] = recalls_at5[i]
                     results_dict[f'{idx_to_dress_mapping[i]}_recall_at10'] = recalls_at10[i]
+                    results_dict[f'{idx_to_dress_mapping[i]}_recall_at20'] = recalls_at20[i]
                     results_dict[f'{idx_to_dress_mapping[i]}_recall_at50'] = recalls_at50[i]
                 results_dict.update({
+                    f'average_recall_at5': mean(recalls_at5),
                     f'average_recall_at10': mean(recalls_at10),
+                    f'average_recall_at20': mean(recalls_at20),
                     f'average_recall_at50': mean(recalls_at50),
                     f'average_recall': (mean(recalls_at50) + mean(recalls_at10)) / 2
                 })
@@ -223,8 +233,8 @@ def combiner_training_fiq(train_dress_types: List[str], val_dress_types: List[st
 
             # Save model
             if save_training:
-                if save_best and results_dict['average_recall'] > best_avg_recall:
-                    best_avg_recall = results_dict['average_recall']
+                if save_best and results_dict['average_recall_at10'] > best_avg_recall:
+                    best_avg_recall = results_dict['average_recall_at10']
                     save_model('combiner', epoch, combiner, training_path)
                 elif not save_best:
                     save_model(f'combiner_{epoch}', epoch, combiner, training_path)
@@ -490,7 +500,7 @@ if __name__ == '__main__':
     experiment.log_parameters(training_hyper_params)
 
     if torch.cuda.is_available():
-        device = torch.device("cuda:{}".format(args.gpu))
+        device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
